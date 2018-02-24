@@ -7,7 +7,9 @@ var server = require('http').createServer(httpHandler),
     io = require('socket.io').listen(server),
     os = require('os'),
     send = require('send'),
-    mk = require('markdown-it-katex');
+    mk = require('markdown-it-katex'),
+    anc = require('markdown-it-anchor'),
+    toc = require('markdown-it-table-of-contents');
     //mk = require('markdown-it-mathjax');
 
 // Log environment variables for debug
@@ -44,7 +46,7 @@ var md = new MarkdownIt({
     }
   }
 //}).use(mk, { "displayMode": false });
-}).use(mk);
+}).use(mk).use(anc).use(toc, { "includeLevel" : [1,2,3]});
 //}).use(mk());
 
 var lastWrittenMarkdown = '';
