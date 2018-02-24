@@ -1,12 +1,37 @@
-!nstant-markdown-d
+Twid's fork of [!nstant-markdown-d](https://github.com/suan/instant-markdown-d)
 ================
-instant-markdown-d is a small Node.js server that enables instant compilation and previewing of Markup files. A plugin can easily be written for any text editor to interface with it. One currently exists for VIm: https://github.com/suan/vim-instant-markdown. 
+[!nstant-markdown-d](https://github.com/suan/instant-markdown-d) is a small Node.js server that enables instant compilation and previewing of Markdown files. A plugin can easily be written for any text editor to interface with it.
 
-It currently also allows rendering latex markdown mathematical formulas via Katex. 
+One such client currently exists in the form of a plugin for Neovim (and possibly compatible with Vim): [twidxuga/vim-instant-markdown](https://github.com/twidxuga/vim-instant-markdown)
+
+This fork also additionally allows:
+  * Rendering latex markdown mathematical formulas via Katex. 
+  * Serving files (not just images) under the folder within which the markdown document resides, or any of its sub-folders. 
+  * Generating table of contents from the first 3 levels of header tags and insert it in the document with `[[TOC]]` .
 
 Installation
 ------------
-- `[sudo] npm -g install instant-markdown-d`
+
+The following assumes installation on Linux:
+
+1. Ensure that you have [git](https://git-scm.com/), [nodejs](https://nodejs.org/) and [npm](https://www.npmjs.com/) installed.  
+
+2. Clone this repository
+
+```bash
+  cd <base dir>
+  git clone https://github.com/twidxuga/instant-markdown-d`
+```
+
+3. Install the module
+
+```bash
+  cd <base dir>/instant-markdown-d
+  # for user specific installations (recommended)
+  npm install
+  # OR alternatively system wide installation 
+  sudo npm install
+```
 
 REST API
 --------
