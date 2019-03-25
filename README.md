@@ -8,6 +8,7 @@ This fork also additionally allows:
   * Rendering latex markdown mathematical formulas via Katex. 
   * Serving files (not just images) under the folder within which the markdown document resides, or any of its sub-folders. 
   * Generating table of contents from the first 3 levels of header tags and insert it in the document with `[[TOC]]` .
+  * Automatically scrolling to the current editing position.
 
 Installation
 ------------
