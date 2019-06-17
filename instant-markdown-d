@@ -111,22 +111,21 @@ function httpHandler(req, res) {
 
       // serve only static files
       var isIndexFile = /^\/(index\.html)?(\?|$)/.test(req.url);
-      var isStaticContent = /\.(html|css|ttf|woff|woff2)$/.test(req.url);
+      var isStaticContent = /\.(css|ttf|woff|woff2)$/.test(req.url);
 
       //logger.log("isIndex: " + isIndexFile + " isStatic: " + isStaticContent + " URL: "  + req.url);
 
       addSecurityHeaders(req, res, isIndexFile);
-      //addSecurityHeaders(req, res, isStaticContent);
 
       // Only serve content from the base folder tree if allowed
       if (process.env.INSTANT_MARKDOWN_SERVE_FOLDER_TREE &&
-        !(isStaticContent)) {
+        !(isStaticContent || isIndexFile)) {
         basedir = process.cwd(); 
       }
 
       // Otherwise serve the file from the directory this module is in
-      send(req, req.url)
-        .root(basedir)
+      send(req, req.url, {root: basedir})
+        //.root(basedir) // deprecated
         .pipe(res);
 
       break;
