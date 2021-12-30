@@ -12,6 +12,7 @@ var server = require('http').createServer(httpHandler),
     anc = require('markdown-it-anchor'),
     toc = require('markdown-it-table-of-contents'),
     mermaid = require('markdown-it-textual-uml');
+    taskLists = require('markdown-it-task-lists');
     //mk = require('markdown-it-mathjax');
 
 // Log environment variables for debug
@@ -48,7 +49,7 @@ var md = new MarkdownIt({
     }
   }
 //}).use(mk, { "displayMode": false });
-}).use(mk).use(anc).use(toc, { "includeLevel" : [1,2,3]}).use(mermaid);
+}).use(mk).use(anc).use(toc, { "includeLevel" : [1,2,3]}).use(mermaid).use(taskLists);
 //}).use(mk());
 
 var lastWrittenMarkdown = '';
