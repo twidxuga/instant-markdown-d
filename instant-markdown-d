@@ -1,7 +1,17 @@
 #!/usr/bin/env node
 
+// for process management
+var _ = require('underscore')
+var sh = require('shelljs')
+var isRunning = require('is-running')
+var { pipeline, Transform, PassThrough, Readable } = require('stream')
+
+// for logging
+var fs = require('fs');
+
 var MarkdownIt = require('markdown-it');
 var hljs = require('highlight.js');
+const { OutgoingMessage } = require('http');
 var server = require('http').createServer(httpHandler),
     exec = require('child_process').exec,
     io = require('socket.io').listen(server),
@@ -12,178 +22,287 @@ var server = require('http').createServer(httpHandler),
     anc = require('markdown-it-anchor'),
     toc = require('markdown-it-table-of-contents'),
     mermaid = require('markdown-it-textual-uml');
-    taskLists = require('markdown-it-task-lists');
-    //mk = require('markdown-it-mathjax');
+taskLists = require('markdown-it-task-lists');
 
-// Log environment variables for debug
-//const { Console } = require('console');
-//var fs = require('fs');
-//const output = fs.createWriteStream('./test.log');
-//const errorOutput = fs.createWriteStream('./test.log');
-//const logger = new Console(output, errorOutput);
-//logger.log(process.env)
+// set port
+var port = 8090 // default port
+if (process.env.INSTANT_MARKDOWN_PORT) port = parseInt(process.env.INSTANT_MARKDOWN_PORT)
 
-// WARNING: By setting this environment variable, anyone on your network may
-// run arbitrary code in your browser and read arbitrary files in the working
-// directory of the open file!
-if (process.env.INSTANT_MARKDOWN_OPEN_TO_THE_WORLD) {
-  // Listen on any interface.
-  server.listen(8090, onListening).once('error', onServerError);
-} else {
-  // Listen locally.
-  server.listen(8090, '127.0.0.1', onListening).once('error', onServerError);
-}
+// Logging setup 
+logger = startLogger();
+logger.log("Starting instant-markdown-d");
+logger.log(process.env);
+
+// check if another instance is running and kill it if so
+manageInstances();
+
+// Start server and listen for new connections
+serverStart(null, 3);
 
 var md = new MarkdownIt({
-  html: true,
-  linkify: true,
-  highlight: function(str, lang) {
-    if (lang && hljs.getLanguage(lang)) {
-      try {
-        return hljs.highlight(lang, str).value;
-      } catch (err) {
-        // Do nothing
-      }
-    } else {
-      return str;
+    html: true,
+    linkify: true,
+    highlight: function(str, lang) {
+        if (lang && hljs.getLanguage(lang)) {
+            try {
+                return hljs.highlight(lang, str).value;
+            } catch (err) {
+                // Do nothing
+            }
+        } else {
+            return str;
+        }
     }
-  }
-//}).use(mk, { "displayMode": false });
-}).use(mk).use(anc).use(toc, { "includeLevel" : [1,2,3]}).use(mermaid).use(taskLists);
+    //}).use(mk, { "displayMode": false });
+}).use(mk).use(anc).use(toc, {
+    "includeLevel": [1, 2, 3]
+}).use(mermaid).use(taskLists);
 //}).use(mk());
 
+// web socket event management
+var subBase = '';
+var isRoot = true; // Current url displayed in browser is just /
 var lastWrittenMarkdown = '';
-function writeMarkdown(body) {
-  lastWrittenMarkdown = md.render(body);
-  io.sockets.emit('newContent', lastWrittenMarkdown);
+var lastWrittenRootMarkdown = '';
+var defaultSocketEvent = 'newContent'
+var lastWrittenEvent = defaultSocketEvent;
+
+function writeMarkdown(body, event='') {
+    lastWrittenMarkdown = md.render(body);
+    if (isRoot) lastWrittenRootMarkdown = lastWrittenMarkdown;
+    lastWrittenEvent = !event ? lastWrittenEvent : event;
+    io.sockets.emit(lastWrittenEvent, lastWrittenMarkdown);
 }
 
 function readAllInput(input, callback) {
-  var body = '';
-  input.on('data', function(data) {
-    body += data;
-    if (body.length > 1e6) {
-      throw new Error('The request body is too long.');
-    }
-  });
-  input.on('end', function() {
-    callback(body);
-  });
+    var body = '';
+    input.on('data', function(data) {
+        body += data;
+        if (body.length > 1e6) {
+            logger.error('The request body is too long!')
+            return;
+        }
+    });
+    input.on('end', function() {
+        callback(body);
+    });
 }
 
 function addSecurityHeaders(req, res, isIndexFile) {
-  var csp = [];
+    var csp = [];
 
-  // Cannot use 'self' because Chrome does not treat 'self' as http://host
-  // when the sandbox directive is set.
-  var HTTP_HOST = req.headers.host || 'localhost:8090';
-  var CSP_SELF = 'http://' + HTTP_HOST;
+    // Cannot use 'self' because Chrome does not treat 'self' as http://host
+    // when the sandbox directive is set.
+    var HTTP_HOST = req.headers.host || 'localhost:' + port;
+    var CSP_SELF = 'http://' + HTTP_HOST;
 
-  if (!process.env.INSTANT_MARKDOWN_ALLOW_UNSAFE_CONTENT) {
-    if (isIndexFile) {
-      // index.html will drop the scripting capabilities upon load.
-      csp.push('script-src ' + CSP_SELF + " 'unsafe-inline'");
-      csp.push('sandbox allow-scripts allow-modals allow-forms');
-    } else {
-      csp.push('script-src ');
+    if (!process.env.INSTANT_MARKDOWN_ALLOW_UNSAFE_CONTENT) {
+        if (isIndexFile) {
+            // index.html will drop the scripting capabilities upon load.
+            csp.push('script-src ' + CSP_SELF + " 'unsafe-inline'");
+            csp.push('sandbox allow-scripts allow-modals allow-forms');
+        } else {
+            csp.push('script-src ');
+        }
     }
-  }
-  if (process.env.INSTANT_MARKDOWN_BLOCK_EXTERNAL) {
-    csp.push('default-src data: ' + CSP_SELF);
-    csp.push("style-src data: 'unsafe-inline' " + CSP_SELF);
-    csp.push('connect-src ' + CSP_SELF + ' ws://' + HTTP_HOST);
-  }
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Content-Security-Policy', csp.join('; '));
-  res.setHeader('Access-Control-Allow-Origin', "*")
-  if (isIndexFile) {
-    // Never cache the index file, to make sure that changes to the CSP are
-    // picked up across soft reloads.
-    res.setHeader('Cache-Control', 'no-store');
-  }
+    if (process.env.INSTANT_MARKDOWN_BLOCK_EXTERNAL) {
+        csp.push('default-src data: ' + CSP_SELF);
+        csp.push("style-src data: 'unsafe-inline' " + CSP_SELF);
+        csp.push('connect-src ' + CSP_SELF + ' ws://' + HTTP_HOST);
+    }
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', csp.join('; '));
+    res.setHeader('Access-Control-Allow-Origin', "*")
+    if (isIndexFile) {
+        // Never cache the index file, to make sure that changes to the CSP are
+        // picked up across soft reloads.
+        res.setHeader('Cache-Control', 'no-store');
+    }
 }
 
 function httpHandler(req, res) {
-  switch(req.method)
-  {
-    case 'GET':
-    
-     // basedir is a folder containing only static files for security
-      var basedir = path.join(__dirname, "imd_static")
+    url = req.url
+    switch (req.method) {
+        case 'GET':
 
-      // serve only static files
-      var isIndexFile = /^\/(index\.html)?(\?|$)/.test(req.url);
-      var isStaticContent = /\.(css|ttf|js|woff|woff2)$/.test(req.url);
+            // basedir is a folder containing only static files for security
+            var staticBasedir = path.join(__dirname, "imd_static")
 
-      //logger.log("isIndex: " + isIndexFile + " isStatic: " + isStaticContent + " URL: "  + req.url);
+            // serve only static files
+            var isIndexFile = /^\/(index\.html)?(\?|$)/.test(url);
+            var isStaticContent = /\.(css|js|ttf|woff|woff2)$/.test(url);
+            var isMarkdown = /\.(md|MD|mD|Md)$/.test(url);
 
-      addSecurityHeaders(req, res, isIndexFile);
+            // ensure static content served for pages inside subdirs of doc dir
+            if (isStaticContent) {
+                url = url.replace(/\/?([^\/]+\/)*([^\/]+)$/, '$2');
+                if (/\.(ttf|woff|woff2)$/.test(url)) {
+                    url = "fonts/" + url;
+                }
+            }
 
-      // Only serve content from the base folder tree if allowed
-      if (process.env.INSTANT_MARKDOWN_SERVE_FOLDER_TREE &&
-        !(isStaticContent || isIndexFile)) {
-        basedir = process.cwd(); 
-      }
+            logger.log("isIndex: " + isIndexFile + " isStatic: " + isStaticContent)
+            logger.log("URL: " + req.url + " Matched URL: " + url);
 
-      // Otherwise serve the file from the directory this module is in
-      send(req, req.url, {root: basedir})
-        //.root(basedir) // deprecated
-        .pipe(res);
+            addSecurityHeaders(req, res, isIndexFile);
 
-      break;
+            // Only serve content from the base folder tree if allowed
+            if (process.env.INSTANT_MARKDOWN_SERVE_FOLDER_TREE &&
+                !(isStaticContent || isIndexFile)) {
+                basedir = process.cwd() + subBase;
+            } else {
+                basedir = staticBasedir
+            }
 
-    case 'DELETE':
-      io.sockets.emit('die');
-      process.exit();
-      break;
+            logger.log("Resolved basedir : " + basedir)
 
-    case 'PUT':
-      readAllInput(req, writeMarkdown);
-      res.writeHead(200);
-      res.end();
-      break;
+            if (isMarkdown) {
+                subBase = ''; // markdown GEt requets include full path
+                isRoot = false;
+                fname = path.join('./', url)
+                logger.log("Serving file : " + fname)
+                logger.log("Process path : " + process.cwd())
 
-    default:
-  }
+                fs.readFile(fname, 'utf8' , (err, data) => {
+                    if (err) {
+                        logger.error("Error reading markdown file : " +err)
+                        return;
+                    }
+                    logger.log("Read file data : " + data);
+                    addSecurityHeaders(req, res, true);
+                    res.writeHead(200, { 'content-type': 'text/html' });
+                    eventId = url.replace(/[./%$&_+\-=+\[\]()"'#~@{}?<>,!`*\^]*/g, '');
+                    logger.log("Socket.io eventId : " + eventId);
+                    indexHtml = fs.readFileSync(path.join(staticBasedir, 'index.html'),'utf8')
+                    indexHtml = indexHtml.replace(/newContent/g, eventId)
+                    res.end(indexHtml)
+                    writeMarkdown(data, eventId);
+                })
+                break;
+            }
+
+           // return to base if no markdown page is specified 
+            if (url == '/') {
+                isRoot = true;
+                lastWrittenEvent = defaultSocketEvent;
+                lastWrittenMarkdown = lastWrittenRootMarkdown;
+            }
+
+            send(req, url, {
+                    root: basedir
+                })
+                .pipe(res);
+
+            break;
+
+        case 'DELETE':
+            io.sockets.emit('die');
+            process.exit();
+            break;
+
+        case 'PUT':
+            rgx = new RegExp("^" + process.cwd());
+            subBase = url.replace(rgx, '').replace(/\/[^/]*$/, '');
+            logger.log("subBase set via PUT : " + subBase);
+
+            //TODO checking this here
+            lastWrittenEvent = defaultSocketEvent;
+            lastWrittenMarkdown = lastWrittenRootMarkdown;
+            isRoot = true;
+            res.writeHead(200);
+            readAllInput(req, writeMarkdown);
+            res.end();
+            break;
+
+        default:
+    }
 }
 
-io.sockets.on('connection', function(sock){
-  process.stdout.write('connection established!');
-  if (lastWrittenMarkdown) {
-    sock.emit('newContent', lastWrittenMarkdown);
-  }
+io.sockets.on('connection', function(sock) {
+    process.stdout.write('connection established!');
+    if (lastWrittenMarkdown) {
+        //sock.emit('newContent', lastWrittenMarkdown);
+        sock.emit(lastWrittenEvent, lastWrittenMarkdown);
+    }
 });
 
 
-function onListening() {
-  if (os.platform() === 'win32') {
-    exec('start /b http://localhost:8090', function(error, stdout, stderr){});
-  } else if (os.platform() === 'darwin') {
-    exec('open -g http://localhost:8090', function(error, stdout, stderr){});
-  } else { // assume unix/linux
-    exec('xdg-open http://localhost:8090', function(error, stdout, stderr){});
-  }
-  readAllInput(process.stdin, function(body) {
-    writeMarkdown(body);
-  });
-  process.stdin.resume();
-}
-
-function onServerError(e) {
-  if (e.code === 'EADDRINUSE') {
+async function onListening() {
+    if (os.platform() === 'win32') {
+        exec('start /b http://localhost:' + port, function(error, stdout, stderr) {});
+    } else if (os.platform() === 'darwin') {
+        exec('open -g http://localhost:' + port, function(error, stdout, stderr) {});
+    } else { // assume unix/linux
+        exec('xdg-open http://localhost:' + port, function(error, stdout, stderr) {});
+    }
+    logger.log("Writing markdown to body")
     readAllInput(process.stdin, function(body) {
-      // Forward to existing instant-markdown-d server.
-      require('http').request({
-        hostname: 'localhost',
-        port: 8090,
-        path: '/',
-        method: 'PUT',
-      }).end(body);
+        writeMarkdown(body);
     });
+    logger.log("Process stdin resume")
     process.stdin.resume();
-    return;
-  }
-
-  // Another unexpected error. Raise it again.
-  throw e;
 }
+
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+
+async function serverStart(e, attempts) {
+    if (attempts-- == 0) {
+        logger.error("Exhausted connection attempts")
+        process.exit(1)
+    }
+    if (e) { 
+        logger.log("Error starting listener : " + e)
+        logger.log("Sleeping 1 second")
+        await sleep(1000)
+        logger.log("Waky waky, rise and shine!")
+    }
+
+    listen_args = [port];
+    if (process.env.INSTANT_MARKDOWN_OPEN_TO_THE_WORLD) listen_args.push('127.0.0.1');
+    // only add the 'listening' event callback once
+    if (attempts == 2) listen_args.push(onListening); 
+    
+    logger.log("Connecting - remaining attempts : " + attempts)
+    server.listen(...listen_args).once('error', function (e) {serverStart(e, attempts)});
+}
+
+
+async function manageInstances() {
+    const isInteger = num => /^-?[0-9]+$/.test(num+'');
+    pidfile = '/tmp/instant-markdown-d.pid'; 
+    if (!_.contains(sh.ls("/tmp"), 'instant-markdown-d.pid')) { // If PID file does not exist
+        logger.log("instant-markdown-d.pid file does not exist. Continuing happily!")
+    } else { // PID file exists
+        let pid = sh.cat(pidfile); //.stdout
+        logger.log("Previous pid : " + pid)
+        if (isInteger(pid) && !isRunning(pid)) {
+            logger.log("instant-markdown-d.pid exists but the server is not running. Continuing Happily");
+        } else if (isInteger(pid) && selfpid != pid) {
+            logger.log("instant-markdown-d.pid exists and a server is running. Killing it with no mercy!");
+            await sleep(1000)
+            process.kill(pid, 'SIGKILL')
+            logger.log("I " + selfpid + " killed " + pid);
+        }
+    }
+    pf = fs.createWriteStream(pidfile);
+    pf.write(selfpid);
+    pf.end();
+}
+
+
+function startLogger() {
+    selfpid = process.pid.toString();
+    var log = '/tmp/instant-markdown-d.' + selfpid + '.log';
+    const {Console} = require('console');
+    const output = fs.createWriteStream(log, {'flags': 'a'});
+    const errorOutput = fs.createWriteStream(log, {'flags': 'a'});
+    const logger = new Console(output, errorOutput);
+    return logger;
+}
+

@@ -42,12 +42,12 @@
       socket.on('newContent', function(newHTML) {
         document.querySelector(".markdown-body").innerHTML = newHTML;
 
+        mermaid.init()
         // scroll to the hyperlink with id="marker"
-        let marker = document.getElementById("marker");
+        let marker = document.getElementById("imdmarker");
         if(marker) {
             marker.scrollIntoView({block : "center"});
         }
-        mermaid.init()
       });
       socket.on('die', function(newHTML) {
         window.open('', '_self', '');
