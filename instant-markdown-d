@@ -130,7 +130,7 @@ function httpHandler(req, res) {
 
             // serve only static files
             var isIndexFile = /^\/(index\.html)?(\?|$)/.test(url);
-            var isStaticContent = /\.(css|js|ttf|woff|woff2)$/.test(url);
+            var isStaticContent = /\.(css|js|ttf|woff|woff2)$|favicon.ico$/.test(url);
             var isMarkdown = /\.(md|MD|mD|Md)$/.test(url);
 
             // ensure static content served for pages inside subdirs of doc dir
