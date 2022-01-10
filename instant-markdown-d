@@ -132,6 +132,7 @@ function httpHandler(req, res) {
             var isIndexFile = /^\/(index\.html)?(\?|$)/.test(url);
             var isStaticContent = /\.(css|js|ttf|woff|woff2)$|favicon.ico$/.test(url);
             var isMarkdown = /\.(md|MD|mD|Md)$/.test(url);
+            var isHomeContent = /^\/(home|Users)\/([^\/])+\//.test(url);
 
             // ensure static content served for pages inside subdirs of doc dir
             if (isStaticContent) {
@@ -151,7 +152,14 @@ function httpHandler(req, res) {
                 !(isStaticContent || isIndexFile)) {
                 basedir = process.cwd() + subBase;
             } else {
-                basedir = staticBasedir
+                basedir = staticBasedir;
+            }
+
+            //serve home folder
+            if (process.env.INSTANT_MARKDOWN_SERVE_HOME_FOLDER && isHomeContent) {
+                basedir = "";
+            } else { // disable isHomeContent for markdown if not allowed
+                isHomeContent = false;
             }
 
             logger.log("Resolved basedir : " + basedir)
@@ -159,7 +167,7 @@ function httpHandler(req, res) {
             if (isMarkdown) {
                 subBase = ''; // markdown GEt requets include full path
                 isRoot = false;
-                fname = path.join('./', url)
+                fname = isHomeContent ? url : path.join('./', url)
                 logger.log("Serving file : " + fname)
                 logger.log("Process path : " + process.cwd())
 
