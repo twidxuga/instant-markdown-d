@@ -11,18 +11,18 @@
     "instant-markdown-d": "./instant-markdown-d"
   },
   "dependencies": {
-    "highlight.js": "^9.12.0",
-    "markdown-it": "^8.4.0",
-    "markdown-it-anchor": "^4.0.0",
-    "markdown-it-katex": "iktakahiro/markdown-it-katex#v3.1.0",
+    "highlight.js": "^11.10.0",
+    "is-running": "^2.1.0",
+    "markdown-it": "^14.1.0",
+    "markdown-it-anchor": "^9.0.1",
+    "markdown-it-katex": "xtthaop/markdown-it-katex",
     "markdown-it-table-of-contents": "^0.4.3",
     "markdown-it-task-lists": "^2.1.1",
     "markdown-it-textual-uml": "^0.1.3",
-    "mermaid": "^8.13.8",
+    "mermaid": "^10.9.1",
     "send": "^0.16.2",
-    "socket.io": "^1.4.5",
-    "underscore": "^1.13.2",
     "shelljs": "^0.8.4",
-    "is-running": "^2.1.0"
+    "socket.io": "^2.5.1",
+    "underscore": "^1.13.2"
   }
 }
