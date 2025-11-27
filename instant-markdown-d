@@ -21,7 +21,7 @@ var server = require('http').createServer(httpHandler),
     mk = require('markdown-it-katex'),
     anc = require('markdown-it-anchor'),
     toc = require('markdown-it-table-of-contents'),
-    mermaid = require('markdown-it-textual-uml');
+    mermaid = require('markdown-it-textual-uml').default;
 taskLists = require('markdown-it-task-lists');
 
 // set port
