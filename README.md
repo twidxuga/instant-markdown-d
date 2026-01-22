@@ -11,11 +11,21 @@ This fork also additionally allows:
   + URLs contain the name of the file. To go back to seeing the file being edited in Neovim, a user must click the browser's back button to return to the landing page (root path, e.g. `http://localhost:8090`)
 - **Changing to another markdown buffer immediately displays that buffer**, as long as it is within the same folder or subfolder of the first markdown document for which InstantMarkdownPreview was called.
   + As long as that buffer is in the folder or a sub-folder of the first markdown document for which InstantMardownPreview was started. 
-- **Mermaid diagrams** are now rendered.
+- **Mermaid diagrams with ELK layout** - Enhanced Mermaid v11.12.2 with ELK layout engine for better rendering of complex nested diagrams (hierarchical, layered algorithm).
+- **Emoji shortcode support** - GitHub-style emoji shortcodes like `:rocket:`, `:white_check_mark:`, `:x:` now render as emojis.
+- **Click-to-zoom diagrams** - Click any Mermaid diagram to view it full-screen in a modal overlay. Scroll vertically for tall diagrams. Close with x button, click outside, or Escape key.
 - Running **InstantMarkdownPreview now restarts the server**. However, there is little need to restart the server when changing documents though, as it happens automatically.
 - **Task lists** (GitHub-style) are now rendered. 
 - **TOC** are rendered with the `[[TOC]]` tag.
 - **Serves all content** within the folder tree where the initial markdown document is - e.g. display images, download pdfs, etc.
+
+Recent Updates (v0.4.0)
+-----------------------
+
+- Modernized codebase with ES6+, async/await patterns
+- Updated dependencies: Socket.io 4.8.1, highlight.js 11.11.1, KaTeX 0.16.21
+- Improved path handling for files with spaces and linked markdown files
+- ESM modules for Mermaid with local chunk serving (offline support)
 
 Installation
 ------------
