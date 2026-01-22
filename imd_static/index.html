@@ -1,39 +1,62 @@
 <!DOCTYPE html>
-<html lang="en" class="">
+<html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
-  <meta http-equiv="Content-Language" content="en">
-  <link rel="stylesheet" type="text/css" href="github-syntax-highlight.css">
-  <link rel="stylesheet" type="text/css" href="github-markdown.css">
-  <link rel="stylesheet" type="text/css" href="katex.min.css">
+  <title>Markdown Preview</title>
+  
+  <!-- Syntax highlighting from highlight.js -->
+  <link rel="stylesheet" href="/node_modules/highlight.js/styles/github.min.css">
+  <!-- GitHub-style markdown rendering -->
+  <link rel="stylesheet" href="/github-markdown.css">
+  <!-- KaTeX math rendering -->
+  <link rel="stylesheet" href="/node_modules/katex/dist/katex.min.css">
 
   <style>
+    /* Base layout */
     body {
-      min-width: 200px
+      min-width: 200px;
+      margin: 0;
+      padding: 0;
+      background: #fff;
     }
+    
     .container {
-      width: 800px
+      width: 100%;
+      max-width: 900px;
+      margin: 0 auto;
     }
-    #readme .markdown-body, #readme .plain {
-        border: 0px solid #ddd;
+    
+    #readme .markdown-body,
+    #readme .plain {
+      border: none;
     }
+    
     .markdown-body {
       min-width: 200px;
       max-width: 800px;
       margin: 0 auto;
       padding: 30px;
+      box-sizing: border-box;
     }
+    
+    /* Connection error indicator */
     #con-error {
       position: fixed;
-      top: 0px;
-      right: 0px;
-      padding: 5px;
-      background: white;
-      color: red;
+      top: 0;
+      right: 0;
+      padding: 8px 16px;
+      background: #fef2f2;
+      color: #dc2626;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font-size: 14px;
+      border-bottom-left-radius: 4px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      z-index: 9999;
     }
 
-    /* Mermaid diagram styles - clickable cursor with proper containment */
+    /* Mermaid diagram styles */
     .markdown-body pre.mermaid {
       cursor: zoom-in;
       transition: box-shadow 0.2s ease;
@@ -46,23 +69,22 @@
       justify-content: center;
       align-items: center;
     }
+    
     .markdown-body pre.mermaid:hover {
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
     }
+    
     .markdown-body pre.mermaid svg {
       display: block;
       max-width: 100%;
       height: auto;
     }
 
-    /* Diagram zoom modal overlay */
+    /* Diagram zoom modal */
     #diagram-modal {
       display: none;
       position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
+      inset: 0;
       background: #ffffff;
       z-index: 10000;
       justify-content: center;
@@ -72,22 +94,27 @@
       box-sizing: border-box;
       overflow: auto;
     }
+    
     #diagram-modal.active {
       display: flex;
     }
+    
     #diagram-modal-content {
       max-width: 95vw;
       max-height: calc(100vh - 100px);
-      overflow: auto;
+      overflow-x: hidden;
+      overflow-y: auto;
       display: flex;
       justify-content: center;
-      align-items: center;
+      align-items: flex-start;
       padding: 20px;
     }
+    
     #diagram-modal-content svg {
       max-width: 100%;
       height: auto;
     }
+    
     #diagram-modal-close {
       position: fixed;
       top: 20px;
@@ -107,10 +134,12 @@
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
       z-index: 10001;
     }
+    
     #diagram-modal-close:hover {
       background: #e5e7eb;
       transform: scale(1.1);
     }
+    
     #diagram-modal-hint {
       position: fixed;
       bottom: 20px;
@@ -121,15 +150,45 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
     }
   </style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="container">
+      <div class="repository-with-sidebar repo-container">
+        <div id="js-repo-pjax-container" class="repository-content">
+          <div id="readme" class="boxed-group flush clearfix announce instapaper_body md">
+            <article class="markdown-body"></article>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <div id="con-error" style="display:none">Live preview disconnected</div>
+  
+  <!-- Diagram zoom modal -->
+  <div id="diagram-modal" onclick="if(event.target === this) window.closeDiagramModal();">
+    <button id="diagram-modal-close" onclick="window.closeDiagramModal();" title="Close (Esc)" aria-label="Close modal">×</button>
+    <div id="diagram-modal-content"></div>
+    <div id="diagram-modal-hint">Click outside or press Esc to close</div>
+  </div>
+
+  <!-- Socket.io client (v4) -->
   <script src="/socket.io/socket.io.js"></script>
+  
+  <!-- Main application script -->
   <script type="module">
-    import mermaid from './mermaid.esm.min.mjs';
-    import elkLayouts from './mermaid-layout-elk.esm.min.mjs';
+    // ==========================================================================
+    // Mermaid Initialization
+    // ==========================================================================
     
-    // Register ELK layout algorithms
+import mermaid from '/mermaid.esm.min.mjs';
+import elkLayouts from '/mermaid-layout-elk.esm.min.mjs';
+    
+    // Register ELK layout algorithms for better diagram rendering
     mermaid.registerLayoutLoaders(elkLayouts);
     
-    // Make mermaid available globally for the rest of the script
+    // Expose mermaid globally for use in event handlers
     window.mermaid = mermaid;
     
     mermaid.initialize({
@@ -139,7 +198,6 @@
       elk: {
         mergeEdges: true,
         nodePlacementStrategy: 'NETWORK_SIMPLEX',
-        // Better handling of nested subgraphs
         'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
         'elk.algorithm': 'layered',
         'elk.layered.spacing.nodeNodeBetweenLayers': '50',
@@ -191,179 +249,204 @@
         padding: 10
       }
     });
+
+    // ==========================================================================
+    // Socket.io Connection (v4 API)
+    // ==========================================================================
     
-    // Signal that mermaid is ready
-    window.mermaidReady = true;
-    window.dispatchEvent(new Event('mermaidReady'));
-
-    // Wait for mermaid module to be ready
     function initSocket() {
-      var socket = io.connect('http://'+ window.location.host +'/');
-      socket.on('connect', function () {
-        setDisconnected(false);
-        socket.on('newContent', async function(newHTML) {
-          document.querySelector(".markdown-body").innerHTML = newHTML;
-
-          if (window.mermaid) {
-            await window.mermaid.run();
-          }
-          
-          // Add click-to-zoom handlers to all mermaid diagrams
-          window.attachDiagramZoomHandlers();
-          
-          // scroll to the hyperlink with id="marker"
-          let marker = document.getElementById("imdmarker");
-          if(marker) {
-              marker.scrollIntoView({block : "center"});
-          }
-        });
-        socket.on('die', function(newHTML) {
-          window.open('', '_self', '');
-          window.close();
-
-          var firefoxWarning =
-          "<h1>Please close this tab!</h1>" +
-          "<h3>If you are using Firefox and want the preview window to close automatically go to about:config and set dom.allow_scripts_to_close_windows to true.</h3>"
-          document.body.innerHTML = firefoxWarning;
-        });
+      // Socket.io v4 uses io() directly
+      const socket = io({
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        reconnectionDelay: 1000,
+        reconnectionAttempts: 10
       });
-      socket.on('disconnect', function() {
+      
+      socket.on('connect', () => {
+        console.log('Connected to server');
+        setDisconnected(false);
+      });
+      
+      socket.on('disconnect', () => {
+        console.log('Disconnected from server');
         setDisconnected(true);
       });
+      
+      socket.on('connect_error', (error) => {
+        console.error('Connection error:', error);
+        setDisconnected(true);
+      });
+      
+      // Listen for markdown content updates
+      socket.on('newContent', handleContentUpdate);
+      
+      // Listen for shutdown signal
+      socket.on('die', handleShutdown);
     }
     
-    // Initialize socket immediately - mermaid will be ready by the time content arrives
-    initSocket();
-
-    try {
-      eval('// If CSP is active, then this is blocked');
-    } catch (e) {
-      // Detected that the CSP was active (by the user's preference).
-      // Drop capabilities to prevent rendered markdown from executing scripts.
-      var meta = document.createElement('meta');
-      meta.setAttribute('http-equiv', 'Content-Security-Policy');
-      meta.setAttribute('content', "script-src 'none';");
-      document.head.appendChild(meta);
+    async function handleContentUpdate(newHTML) {
+      const markdownBody = document.querySelector('.markdown-body');
+      if (!markdownBody) return;
+      
+      markdownBody.innerHTML = newHTML;
+      
+      // Render mermaid diagrams
+      if (window.mermaid) {
+        try {
+          await window.mermaid.run();
+        } catch (error) {
+          console.error('Mermaid rendering error:', error);
+        }
+      }
+      
+      // Attach zoom handlers to diagrams
+      window.attachDiagramZoomHandlers();
+      
+      // Scroll to marker if present (for cursor tracking)
+      const marker = document.getElementById('imdmarker');
+      if (marker) {
+        marker.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }
     }
-
+    
+    function handleShutdown() {
+      // Attempt to close the window
+      window.open('', '_self', '');
+      window.close();
+      
+      // Fallback message for browsers that block window.close()
+      document.body.innerHTML = `
+        <div style="padding: 40px; text-align: center; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;">
+          <h1>Preview Closed</h1>
+          <p>Please close this tab manually.</p>
+          <p style="color: #666; font-size: 14px;">
+            Tip: In Firefox, go to about:config and set <code>dom.allow_scripts_to_close_windows</code> to <code>true</code>
+            for automatic tab closing.
+          </p>
+        </div>
+      `;
+    }
+    
     function setDisconnected(isDisconnected) {
-      document.getElementById('con-error').style.display =
-        isDisconnected ? 'block' : 'none';
+      const errorEl = document.getElementById('con-error');
+      if (errorEl) {
+        errorEl.style.display = isDisconnected ? 'block' : 'none';
+      }
     }
 
-    // Diagram zoom modal functionality - exposed globally for onclick handlers
+    // ==========================================================================
+    // Diagram Zoom Modal
+    // ==========================================================================
+    
     window.attachDiagramZoomHandlers = function() {
       const diagrams = document.querySelectorAll('.markdown-body pre.mermaid');
-      diagrams.forEach(function(diagram) {
+      
+      diagrams.forEach((diagram) => {
         // Remove existing listener to avoid duplicates
         diagram.removeEventListener('click', window.openDiagramModal);
         diagram.addEventListener('click', window.openDiagramModal);
         
-        // Scale diagram to fit container while preserving aspect ratio
+        // Scale diagram to fit container
         const svg = diagram.querySelector('svg');
         if (svg) {
-          const viewBox = svg.getAttribute('viewBox');
-          if (viewBox) {
-            const [, , vbWidth, vbHeight] = viewBox.split(' ').map(parseFloat);
-            const containerWidth = diagram.clientWidth - 32; // account for padding
-            
-            // Scale to fit container width, with max height constraint
-            if (vbWidth > containerWidth) {
-              const scale = containerWidth / vbWidth;
-              const scaledHeight = vbHeight * scale;
-              svg.style.width = containerWidth + 'px';
-              svg.style.height = scaledHeight + 'px';
-              svg.style.maxWidth = '100%';
-            }
-          }
+          scaleSvgToFit(svg, diagram);
         }
       });
     };
-
+    
+    function scaleSvgToFit(svg, container) {
+      const viewBox = svg.getAttribute('viewBox');
+      if (!viewBox) return;
+      
+      const [, , vbWidth, vbHeight] = viewBox.split(' ').map(parseFloat);
+      const containerWidth = container.clientWidth - 32; // Account for padding
+      
+      if (vbWidth > containerWidth && containerWidth > 0) {
+        const scale = containerWidth / vbWidth;
+        const scaledHeight = vbHeight * scale;
+        
+        svg.style.width = `${containerWidth}px`;
+        svg.style.height = `${scaledHeight}px`;
+        svg.style.maxWidth = '100%';
+      }
+    }
+    
     window.openDiagramModal = function(event) {
       const diagram = event.currentTarget;
       const svg = diagram.querySelector('svg');
       if (!svg) return;
-
+      
       const modal = document.getElementById('diagram-modal');
       const modalContent = document.getElementById('diagram-modal-content');
       
-      // Clear previous content first
+      // Clear previous content
       modalContent.innerHTML = '';
       
+      // Clone SVG and reset styles
       const svgClone = svg.cloneNode(true);
+      svgClone.style.cssText = '';
       
-      // Reset any inline styles from the non-zoomed view
-      svgClone.style.width = '';
-      svgClone.style.height = '';
-      svgClone.style.maxWidth = '';
-      
+      // Scale to fill width, allow vertical scroll for tall diagrams
       const viewBox = svg.getAttribute('viewBox');
       if (viewBox) {
         const [, , vbWidth, vbHeight] = viewBox.split(' ').map(parseFloat);
         const aspectRatio = vbWidth / vbHeight;
         
-        const maxWidth = window.innerWidth * 0.92;
-        const maxHeight = window.innerHeight * 0.85;
+        const finalWidth = window.innerWidth * 0.92;
+        const finalHeight = finalWidth / aspectRatio;
         
-        let finalWidth, finalHeight;
-        if (maxWidth / aspectRatio <= maxHeight) {
-          finalWidth = maxWidth;
-          finalHeight = maxWidth / aspectRatio;
-        } else {
-          finalHeight = maxHeight;
-          finalWidth = maxHeight * aspectRatio;
-        }
-        
-        svgClone.setAttribute('width', finalWidth + 'px');
-        svgClone.setAttribute('height', finalHeight + 'px');
-        svgClone.style.width = finalWidth + 'px';
-        svgClone.style.height = finalHeight + 'px';
+        svgClone.setAttribute('width', `${finalWidth}px`);
+        svgClone.setAttribute('height', `${finalHeight}px`);
+        svgClone.style.width = `${finalWidth}px`;
+        svgClone.style.height = `${finalHeight}px`;
         svgClone.style.maxWidth = 'none';
         svgClone.style.display = 'block';
       }
       
       modalContent.appendChild(svgClone);
       modal.classList.add('active');
-      
       document.body.style.overflow = 'hidden';
     };
-
+    
     window.closeDiagramModal = function() {
       const modal = document.getElementById('diagram-modal');
+      const modalContent = document.getElementById('diagram-modal-content');
+      
       modal.classList.remove('active');
       document.body.style.overflow = '';
-      // Clear modal content to prevent ghosting
-      document.getElementById('diagram-modal-content').innerHTML = '';
+      
+      // Clear content to prevent ghosting
+      modalContent.innerHTML = '';
     };
-
-    document.addEventListener('keydown', function(event) {
+    
+    // Close modal on Escape key
+    document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') {
         window.closeDiagramModal();
       }
     });
-  </script>
-</head>
-<body>
-  <div class="wrapper">
-    <div class="container">
-      <div class="repository-with-sidebar repo-container new-discussion-timeline with-full-navigation">
-        <div id="js-repo-pjax-container" class="repository-content context-loader-container">
-          <div id="readme" class="boxed-group flush clearfix announce instapaper_body md">
 
-            <article class="markdown-body"></article>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-  <div id="con-error" style="display:none">Live preview is unavailable</div>
-  
-  <!-- Diagram zoom modal -->
-  <div id="diagram-modal" onclick="if(event.target === this) window.closeDiagramModal();">
-    <button id="diagram-modal-close" onclick="window.closeDiagramModal();" title="Close (Esc)">×</button>
-    <div id="diagram-modal-content"></div>
-    <div id="diagram-modal-hint">Click outside or press Esc to close</div>
-  </div>
+    // ==========================================================================
+    // CSP Detection
+    // ==========================================================================
+    
+    try {
+      // This eval will fail if CSP is active
+      eval('/* CSP test */');
+    } catch {
+      // CSP is active - add restrictive policy for rendered content
+      const meta = document.createElement('meta');
+      meta.setAttribute('http-equiv', 'Content-Security-Policy');
+      meta.setAttribute('content', "script-src 'none';");
+      document.head.appendChild(meta);
+    }
+
+    // ==========================================================================
+    // Initialize
+    // ==========================================================================
+    
+    initSocket();
+  </script>
 </body>
 </html>

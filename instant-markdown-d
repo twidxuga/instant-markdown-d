@@ -1,323 +1,605 @@
 #!/usr/bin/env node
 
-// for process management
-var _ = require('underscore')
-var sh = require('shelljs')
-var isRunning = require('is-running')
-var { pipeline, Transform, PassThrough, Readable } = require('stream')
+'use strict';
 
-// for logging
-var fs = require('fs');
+const fs = require('fs');
+const path = require('path');
+const http = require('http');
+const { exec } = require('child_process');
+const os = require('os');
 
-var MarkdownIt = require('markdown-it');
-var hljs = require('highlight.js');
-const { OutgoingMessage } = require('http');
-var server = require('http').createServer(httpHandler),
-    exec = require('child_process').exec,
-    io = require('socket.io').listen(server),
-    os = require('os'),
-    path = require('path'),
-    send = require('send'),
-    mk = require('markdown-it-katex'),
-    anc = require('markdown-it-anchor'),
-    toc = require('markdown-it-table-of-contents'),
-    mermaid = require('markdown-it-textual-uml').default,
-    emoji = require('markdown-it-emoji').full;
-taskLists = require('markdown-it-task-lists');
+const { Server: SocketServer } = require('socket.io');
+const send = require('send');
+const isRunning = require('is-running');
 
-// set port
-var port = 8090 // default port
-if (process.env.INSTANT_MARKDOWN_PORT) port = parseInt(process.env.INSTANT_MARKDOWN_PORT)
+const MarkdownIt = require('markdown-it');
+const hljs = require('highlight.js');
+const markdownItKatex = require('markdown-it-katex');
+const markdownItAnchor = require('markdown-it-anchor');
+const markdownItToc = require('markdown-it-table-of-contents');
+const markdownItMermaid = require('markdown-it-textual-uml').default;
+const markdownItEmoji = require('markdown-it-emoji').full;
+const markdownItTaskLists = require('markdown-it-task-lists');
 
-// Logging setup 
-logger = startLogger();
-logger.log("Starting instant-markdown-d");
-logger.log(process.env);
+// =============================================================================
+// Configuration
+// =============================================================================
 
-// check if another instance is running and kill it if so
-manageInstances();
+const CONFIG = {
+  port: parseInt(process.env.INSTANT_MARKDOWN_PORT, 10) || 8090,
+  allowUnsafeContent: !!process.env.INSTANT_MARKDOWN_ALLOW_UNSAFE_CONTENT,
+  blockExternal: !!process.env.INSTANT_MARKDOWN_BLOCK_EXTERNAL,
+  serveFolderTree: !!process.env.INSTANT_MARKDOWN_SERVE_FOLDER_TREE,
+  serveHomeFolder: !!process.env.INSTANT_MARKDOWN_SERVE_HOME_FOLDER,
+  openToTheWorld: !!process.env.INSTANT_MARKDOWN_OPEN_TO_THE_WORLD,
+  pidFile: '/tmp/instant-markdown-d.pid',
+  maxBodySize: 1e6,
+  connectionRetries: 3,
+};
 
-// Start server and listen for new connections
-serverStart(null, 3);
+const STATIC_DIR = path.join(__dirname, 'imd_static');
+const NODE_MODULES = path.join(__dirname, 'node_modules');
 
-var md = new MarkdownIt({
-    html: true,
-    linkify: true,
-    highlight: function(str, lang) {
-        if (lang && hljs.getLanguage(lang)) {
-            try {
-                return hljs.highlight(lang, str).value;
-            } catch (err) {
-                // Do nothing
-            }
-        } else {
-            return str;
-        }
+// =============================================================================
+// Logger
+// =============================================================================
+
+const selfPid = process.pid.toString();
+const logFile = `/tmp/instant-markdown-d.${selfPid}.log`;
+const logStream = fs.createWriteStream(logFile, { flags: 'a' });
+
+const logger = {
+  log: (...args) => {
+    const timestamp = new Date().toISOString();
+    logStream.write(`[${timestamp}] ${args.join(' ')}\n`);
+  },
+  error: (...args) => {
+    const timestamp = new Date().toISOString();
+    logStream.write(`[${timestamp}] ERROR: ${args.join(' ')}\n`);
+  },
+};
+
+// =============================================================================
+// Markdown Renderer
+// =============================================================================
+
+const md = new MarkdownIt({
+  html: true,
+  linkify: true,
+  highlight: (str, lang) => {
+    if (lang && hljs.getLanguage(lang)) {
+      try {
+        return hljs.highlight(str, { language: lang }).value;
+      } catch {
+        // Ignore highlighting errors
+      }
     }
-    //}).use(mk, { "displayMode": false });
-}).use(mk).use(anc).use(toc, {
-    "includeLevel": [1, 2, 3]
-}).use(mermaid).use(taskLists).use(emoji);
-//}).use(mk());
+    return ''; // Use external default escaping
+  },
+})
+  .use(markdownItKatex)
+  .use(markdownItAnchor)
+  .use(markdownItToc, { includeLevel: [1, 2, 3] })
+  .use(markdownItMermaid)
+  .use(markdownItTaskLists)
+  .use(markdownItEmoji);
 
-// web socket event management
-var subBase = '';
-var isRoot = true; // Current url displayed in browser is just /
-var lastWrittenMarkdown = '';
-var lastWrittenRootMarkdown = '';
-var defaultSocketEvent = 'newContent'
-var lastWrittenEvent = defaultSocketEvent;
+// =============================================================================
+// State Management
+// =============================================================================
 
-function writeMarkdown(body, event='') {
-    lastWrittenMarkdown = md.render(body);
-    if (isRoot) lastWrittenRootMarkdown = lastWrittenMarkdown;
-    lastWrittenEvent = !event ? lastWrittenEvent : event;
-    io.sockets.emit(lastWrittenEvent, lastWrittenMarkdown);
-}
+const state = {
+  subBase: '',
+  isRoot: true,
+  lastWrittenMarkdown: '',
+  lastWrittenRootMarkdown: '',
+  lastWrittenEvent: 'newContent',
+};
 
-function readAllInput(input, callback) {
-    var body = '';
-    input.on('data', function(data) {
-        body += data;
-        if (body.length > 1e6) {
-            logger.error('The request body is too long!')
-            return;
-        }
-    });
-    input.on('end', function() {
-        callback(body);
-    });
-}
+const DEFAULT_SOCKET_EVENT = 'newContent';
 
-function addSecurityHeaders(req, res, isIndexFile) {
-    var csp = [];
+// =============================================================================
+// HTTP Server
+// =============================================================================
 
-    // Cannot use 'self' because Chrome does not treat 'self' as http://host
-    // when the sandbox directive is set.
-    var HTTP_HOST = req.headers.host || 'localhost:' + port;
-    var CSP_SELF = 'http://' + HTTP_HOST;
-
-    if (!process.env.INSTANT_MARKDOWN_ALLOW_UNSAFE_CONTENT) {
-        if (isIndexFile) {
-            // index.html will drop the scripting capabilities upon load.
-            csp.push('script-src ' + CSP_SELF + " 'unsafe-inline'");
-            csp.push('sandbox allow-scripts allow-modals allow-forms');
-        } else {
-            csp.push('script-src ');
-        }
-    }
-    if (process.env.INSTANT_MARKDOWN_BLOCK_EXTERNAL) {
-        csp.push('default-src data: ' + CSP_SELF);
-        csp.push("style-src data: 'unsafe-inline' " + CSP_SELF);
-        csp.push('connect-src ' + CSP_SELF + ' ws://' + HTTP_HOST);
-    }
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Content-Security-Policy', csp.join('; '));
-    res.setHeader('Access-Control-Allow-Origin', "*")
-    if (isIndexFile) {
-        // Never cache the index file, to make sure that changes to the CSP are
-        // picked up across soft reloads.
-        res.setHeader('Cache-Control', 'no-store');
-    }
-}
-
-function httpHandler(req, res) {
-    url = req.url
-    switch (req.method) {
-        case 'GET':
-
-            // basedir is a folder containing only static files for security
-            var staticBasedir = path.join(__dirname, "imd_static")
-
-            // serve only static files
-            var isIndexFile = /^\/(index\.html)?(\?|$)/.test(url);
-            var isStaticContent = /\.(css|js|mjs|ttf|woff|woff2)$|favicon.ico$/.test(url);
-            var isMarkdown = /\.(md|MD|mD|Md)$/.test(url);
-            var isHomeContent = /^\/(home|Users)\/([^\/])+\//.test(url);
-
-            // ensure static content served for pages inside subdirs of doc dir
-            if (isStaticContent) {
-                // Preserve chunks/ path for ESM module imports
-                if (/^\/chunks\//.test(url)) {
-                    // Keep the chunks path as-is (remove leading slash)
-                    url = url.substring(1);
-                } else {
-                    url = url.replace(/\/?([^\/]+\/)*([^\/]+)$/, '$2');
-                    if (/\.(ttf|woff|woff2)$/.test(url)) {
-                        url = "fonts/" + url;
-                    }
-                }
-            }
-
-            logger.log("isIndex: " + isIndexFile + " isStatic: " + isStaticContent)
-            logger.log("URL: " + req.url + " Matched URL: " + url);
-
-            addSecurityHeaders(req, res, isIndexFile);
-
-            // Only serve content from the base folder tree if allowed
-            if (process.env.INSTANT_MARKDOWN_SERVE_FOLDER_TREE &&
-                !(isStaticContent || isIndexFile)) {
-                basedir = process.cwd() + subBase;
-            } else {
-                basedir = staticBasedir;
-            }
-
-            //serve home folder
-            if (process.env.INSTANT_MARKDOWN_SERVE_HOME_FOLDER && isHomeContent) {
-                basedir = "";
-            } else { // disable isHomeContent for markdown if not allowed
-                isHomeContent = false;
-            }
-
-            logger.log("Resolved basedir : " + basedir)
-
-            if (isMarkdown) {
-                subBase = ''; // markdown GEt requets include full path
-                isRoot = false;
-                fname = isHomeContent ? url : path.join('./', url)
-                logger.log("Serving file : " + fname)
-                logger.log("Process path : " + process.cwd())
-
-                fs.readFile(fname, 'utf8' , (err, data) => {
-                    if (err) {
-                        logger.error("Error reading markdown file : " +err)
-                        return;
-                    }
-                    logger.log("Read file data : " + data);
-                    addSecurityHeaders(req, res, true);
-                    res.writeHead(200, { 'content-type': 'text/html' });
-                    eventId = url.replace(/[./%$&_+\-=+\[\]()"'#~@{}?<>,!`*\^]*/g, '');
-                    logger.log("Socket.io eventId : " + eventId);
-                    indexHtml = fs.readFileSync(path.join(staticBasedir, 'index.html'),'utf8')
-                    indexHtml = indexHtml.replace(/newContent/g, eventId)
-                    res.end(indexHtml)
-                    writeMarkdown(data, eventId);
-                })
-                break;
-            }
-
-           // return to base if no markdown page is specified 
-            if (url == '/') {
-                isRoot = true;
-                lastWrittenEvent = defaultSocketEvent;
-                lastWrittenMarkdown = lastWrittenRootMarkdown;
-            }
-
-            send(req, url, {
-                    root: basedir
-                })
-                .pipe(res);
-
-            break;
-
-        case 'DELETE':
-            io.sockets.emit('die');
-            process.exit();
-            break;
-
-        case 'PUT':
-            rgx = new RegExp("^" + process.cwd());
-            subBase = url.replace(rgx, '').replace(/\/[^/]*$/, '');
-            logger.log("subBase set via PUT : " + subBase);
-
-            //TODO checking this here
-            lastWrittenEvent = defaultSocketEvent;
-            lastWrittenMarkdown = lastWrittenRootMarkdown;
-            isRoot = true;
-            res.writeHead(200);
-            readAllInput(req, writeMarkdown);
-            res.end();
-            break;
-
-        default:
-    }
-}
-
-io.sockets.on('connection', function(sock) {
-    process.stdout.write('connection established!');
-    if (lastWrittenMarkdown) {
-        //sock.emit('newContent', lastWrittenMarkdown);
-        sock.emit(lastWrittenEvent, lastWrittenMarkdown);
-    }
+const server = http.createServer(httpHandler);
+const io = new SocketServer(server, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST'],
+  },
 });
 
+// =============================================================================
+// Utility Functions
+// =============================================================================
 
-async function onListening() {
-    if (os.platform() === 'win32') {
-        exec('start /b http://localhost:' + port, function(error, stdout, stderr) {});
-    } else if (os.platform() === 'darwin') {
-        exec('open -g http://localhost:' + port, function(error, stdout, stderr) {});
-    } else { // assume unix/linux
-        exec('xdg-open http://localhost:' + port, function(error, stdout, stderr) {});
-    }
-    logger.log("Writing markdown to body")
-    readAllInput(process.stdin, function(body) {
-        writeMarkdown(body);
-    });
-    logger.log("Process stdin resume")
-    process.stdin.resume();
+/**
+ * Sleep for specified milliseconds
+ */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-
-function sleep(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
+/**
+ * Read all input from a readable stream
+ */
+function readAllInput(input) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    input.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > CONFIG.maxBodySize) {
+        reject(new Error('Request body too large'));
+      }
+    });
+    input.on('end', () => resolve(body));
+    input.on('error', reject);
   });
 }
 
+/**
+ * Decode URL-encoded path, handling spaces and special characters
+ */
+function decodeUrlPath(urlPath) {
+  try {
+    return decodeURIComponent(urlPath);
+  } catch {
+    return urlPath;
+  }
+}
 
-async function serverStart(e, attempts) {
-    if (attempts-- == 0) {
-        logger.error("Exhausted connection attempts")
-        process.exit(1)
+/**
+ * Write markdown to all connected clients
+ */
+function writeMarkdown(body, event = '') {
+  state.lastWrittenMarkdown = md.render(body);
+  if (state.isRoot) {
+    state.lastWrittenRootMarkdown = state.lastWrittenMarkdown;
+  }
+  state.lastWrittenEvent = event || state.lastWrittenEvent;
+  io.emit(state.lastWrittenEvent, state.lastWrittenMarkdown);
+}
+
+/**
+ * Add security headers to response
+ */
+function addSecurityHeaders(req, res, isIndexFile) {
+  const csp = [];
+  const httpHost = req.headers.host || `localhost:${CONFIG.port}`;
+  const cspSelf = `http://${httpHost}`;
+
+  if (!CONFIG.allowUnsafeContent) {
+    if (isIndexFile) {
+      csp.push(`script-src ${cspSelf} 'unsafe-inline'`);
+      csp.push('sandbox allow-scripts allow-modals allow-forms');
+    } else {
+      csp.push('script-src ');
     }
-    if (e) { 
-        logger.log("Error starting listener : " + e)
-        logger.log("Sleeping 1 second")
-        await sleep(1000)
-        logger.log("Waky waky, rise and shine!")
+  }
+
+  if (CONFIG.blockExternal) {
+    csp.push(`default-src data: ${cspSelf}`);
+    csp.push(`style-src data: 'unsafe-inline' ${cspSelf}`);
+    csp.push(`connect-src ${cspSelf} ws://${httpHost}`);
+  }
+
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Security-Policy', csp.join('; '));
+  res.setHeader('Access-Control-Allow-Origin', '*');
+
+  if (isIndexFile) {
+    res.setHeader('Cache-Control', 'no-store');
+  }
+}
+
+/**
+ * Determine MIME type for file extension
+ */
+function getMimeType(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const mimeTypes = {
+    '.html': 'text/html',
+    '.css': 'text/css',
+    '.js': 'application/javascript',
+    '.mjs': 'application/javascript',
+    '.json': 'application/json',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.svg': 'image/svg+xml',
+    '.ico': 'image/x-icon',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.ttf': 'font/ttf',
+    '.eot': 'application/vnd.ms-fontobject',
+  };
+  return mimeTypes[ext] || 'application/octet-stream';
+}
+
+/**
+ * Serve a static file
+ */
+function serveStaticFile(filePath, res) {
+  fs.stat(filePath, (err, stats) => {
+    if (err || !stats.isFile()) {
+      res.writeHead(404);
+      res.end('Not found');
+      return;
     }
 
-    listen_args = [port];
-    if (process.env.INSTANT_MARKDOWN_OPEN_TO_THE_WORLD) listen_args.push('127.0.0.1');
-    // only add the 'listening' event callback once
-    if (attempts == 2) listen_args.push(onListening); 
+    const mimeType = getMimeType(filePath);
+    res.writeHead(200, { 'Content-Type': mimeType });
+    fs.createReadStream(filePath).pipe(res);
+  });
+}
+
+// =============================================================================
+// HTTP Request Handler
+// =============================================================================
+
+function httpHandler(req, res) {
+  // Decode URL to handle spaces and special characters
+  const decodedUrl = decodeUrlPath(req.url);
+  let url = decodedUrl;
+
+  logger.log(`${req.method} ${req.url} -> ${decodedUrl}`);
+
+  switch (req.method) {
+    case 'GET':
+      handleGetRequest(req, res, url);
+      break;
+
+    case 'PUT':
+      handlePutRequest(req, res, url);
+      break;
+
+    case 'DELETE':
+      handleDeleteRequest(req, res);
+      break;
+
+    default:
+      res.writeHead(405);
+      res.end('Method not allowed');
+  }
+}
+
+/**
+ * Handle GET requests
+ */
+function handleGetRequest(req, res, url) {
+  const isIndexFile = /^\/(index\.html)?(\?|$)/.test(url);
+  const isStaticContent = /\.(css|js|mjs|ttf|woff|woff2|eot|svg|png|jpg|jpeg|gif)$|favicon\.ico$/i.test(url);
+  const isMarkdown = /\.md$/i.test(url);
+  const isHomeContent = /^\/(home|Users)\/[^/]+\//.test(url);
+
+  // Handle node_modules assets (katex, highlight.js)
+  if (url.startsWith('/node_modules/')) {
+    const assetPath = path.join(__dirname, url);
+    addSecurityHeaders(req, res, false);
+    serveStaticFile(assetPath, res);
+    return;
+  }
+
+  // Handle chunks for ESM modules
+  if (url.startsWith('/chunks/')) {
+    const chunkPath = path.join(STATIC_DIR, url);
+    addSecurityHeaders(req, res, false);
+    serveStaticFile(chunkPath, res);
+    return;
+  }
+
+  // Resolve static content paths
+  let resolvedUrl = url;
+  if (isStaticContent && !isHomeContent) {
+    // Extract filename from path for static assets
+    const filename = path.basename(url);
     
-    logger.log("Connecting - remaining attempts : " + attempts)
-    server.listen(...listen_args).once('error', function (e) {serverStart(e, attempts)});
-}
-
-
-async function manageInstances() {
-    const isInteger = num => /^-?[0-9]+$/.test(num+'');
-    pidfile = '/tmp/instant-markdown-d.pid'; 
-    if (!_.contains(sh.ls("/tmp"), 'instant-markdown-d.pid')) { // If PID file does not exist
-        logger.log("instant-markdown-d.pid file does not exist. Continuing happily!")
-    } else { // PID file exists
-        let pid = sh.cat(pidfile); //.stdout
-        logger.log("Previous pid : " + pid)
-        if (isInteger(pid) && !isRunning(pid)) {
-            logger.log("instant-markdown-d.pid exists but the server is not running. Continuing Happily");
-        } else if (isInteger(pid) && selfpid != pid) {
-            logger.log("instant-markdown-d.pid exists and a server is running. Killing it with no mercy!");
-            await sleep(1000)
-            process.kill(pid, 'SIGKILL')
-            logger.log("I " + selfpid + " killed " + pid);
-        }
+    // Check if it's a font file
+    if (/\.(ttf|woff|woff2|eot)$/i.test(filename)) {
+      // Try katex fonts first, then local fonts
+      const katexFontPath = path.join(NODE_MODULES, 'katex', 'dist', 'fonts', filename);
+      if (fs.existsSync(katexFontPath)) {
+        addSecurityHeaders(req, res, false);
+        serveStaticFile(katexFontPath, res);
+        return;
+      }
+      resolvedUrl = `fonts/${filename}`;
+    } else {
+      resolvedUrl = filename;
     }
-    pf = fs.createWriteStream(pidfile);
-    pf.write(selfpid);
-    pf.end();
+  }
+
+  logger.log(`isIndex: ${isIndexFile} isStatic: ${isStaticContent} isMarkdown: ${isMarkdown}`);
+  logger.log(`URL: ${req.url} -> Resolved: ${resolvedUrl}`);
+
+  addSecurityHeaders(req, res, isIndexFile);
+
+  // Handle markdown file requests (clicking links to other .md files)
+  if (isMarkdown) {
+    handleMarkdownRequest(req, res, url);
+    return;
+  }
+
+  // Determine base directory for file serving
+  let baseDir = STATIC_DIR;
+  
+  if (CONFIG.serveFolderTree && !isStaticContent && !isIndexFile) {
+    baseDir = process.cwd() + state.subBase;
+  }
+
+  if (CONFIG.serveHomeFolder && isHomeContent) {
+    baseDir = '';
+  }
+
+  // Reset to root if accessing /
+  if (url === '/') {
+    state.isRoot = true;
+    state.lastWrittenEvent = DEFAULT_SOCKET_EVENT;
+    state.lastWrittenMarkdown = state.lastWrittenRootMarkdown;
+  }
+
+  logger.log(`Serving from: ${baseDir}`);
+
+  // Use send for proper static file serving
+  send(req, resolvedUrl, { root: baseDir })
+    .on('error', (err) => {
+      logger.error(`Error serving ${resolvedUrl}: ${err.message}`);
+      res.writeHead(err.status || 500);
+      res.end(err.message);
+    })
+    .pipe(res);
 }
 
+/**
+ * Handle markdown file requests (linked .md files)
+ */
+function handleMarkdownRequest(req, res, url) {
+  // Set subBase to the directory of this markdown file for relative resource resolution
+  state.subBase = path.dirname(url);
+  state.isRoot = false;
 
-function startLogger() {
-    selfpid = process.pid.toString();
-    var log = '/tmp/instant-markdown-d.' + selfpid + '.log';
-    const {Console} = require('console');
-    const output = fs.createWriteStream(log, {'flags': 'a'});
-    const errorOutput = fs.createWriteStream(log, {'flags': 'a'});
-    const logger = new Console(output, errorOutput);
-    return logger;
+  // Resolve the file path relative to cwd
+  // Note: url starts with '/', so we concatenate directly or strip the leading slash
+  let filePath;
+  if (CONFIG.serveHomeFolder && /^\/(home|Users)\//.test(url)) {
+    filePath = url;
+  } else {
+    // Strip leading slash to make path relative to cwd
+    filePath = path.join(process.cwd(), url.replace(/^\/+/, ''));
+  }
+
+  logger.log(`Reading markdown file: ${filePath}`);
+
+  fs.readFile(filePath, 'utf8', (err, data) => {
+    if (err) {
+      logger.error(`Error reading markdown file: ${err.message}`);
+      res.writeHead(404);
+      res.end('Markdown file not found');
+      return;
+    }
+
+    addSecurityHeaders(req, res, true);
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+
+    // Create unique event ID for this document (sanitize path)
+    const eventId = url.replace(/[^a-zA-Z0-9]/g, '');
+    logger.log(`Socket.io eventId: ${eventId}`);
+
+    // Read index.html and customize for this document
+    const indexHtml = fs.readFileSync(path.join(STATIC_DIR, 'index.html'), 'utf8');
+    const customizedHtml = indexHtml.replace(/newContent/g, eventId);
+
+    res.end(customizedHtml);
+    writeMarkdown(data, eventId);
+  });
 }
 
+/**
+ * Handle PUT requests (content updates from editor)
+ */
+async function handlePutRequest(req, res, url) {
+  // Extract subBase from the URL path
+  const cwd = process.cwd();
+  const cwdRegex = new RegExp(`^${cwd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`);
+  state.subBase = url.replace(cwdRegex, '').replace(/\/[^/]*$/, '');
+  
+  logger.log(`subBase set via PUT: ${state.subBase}`);
+
+  state.lastWrittenEvent = DEFAULT_SOCKET_EVENT;
+  state.lastWrittenMarkdown = state.lastWrittenRootMarkdown;
+  state.isRoot = true;
+
+  res.writeHead(200);
+
+  try {
+    const body = await readAllInput(req);
+    writeMarkdown(body);
+  } catch (err) {
+    logger.error(`Error reading PUT body: ${err.message}`);
+  }
+
+  res.end();
+}
+
+/**
+ * Handle DELETE requests (shutdown)
+ */
+function handleDeleteRequest(req, res) {
+  io.emit('die');
+  res.writeHead(200);
+  res.end();
+  
+  // Clean up and exit
+  setTimeout(() => {
+    try {
+      fs.unlinkSync(CONFIG.pidFile);
+    } catch {
+      // Ignore cleanup errors
+    }
+    process.exit(0);
+  }, 100);
+}
+
+// =============================================================================
+// Socket.IO Connection Handler
+// =============================================================================
+
+io.on('connection', (socket) => {
+  process.stdout.write('connection established!');
+  logger.log(`Client connected: ${socket.id}`);
+
+  if (state.lastWrittenMarkdown) {
+    socket.emit(state.lastWrittenEvent, state.lastWrittenMarkdown);
+  }
+
+  socket.on('disconnect', () => {
+    logger.log(`Client disconnected: ${socket.id}`);
+  });
+});
+
+// =============================================================================
+// Server Startup
+// =============================================================================
+
+/**
+ * Open browser when server starts
+ */
+async function onListening() {
+  const url = `http://localhost:${CONFIG.port}`;
+  
+  const commands = {
+    win32: `start /b ${url}`,
+    darwin: `open -g ${url}`,
+    default: `xdg-open ${url}`,
+  };
+
+  const command = commands[os.platform()] || commands.default;
+  exec(command, (err) => {
+    if (err) {
+      logger.error(`Failed to open browser: ${err.message}`);
+    }
+  });
+
+  logger.log('Reading markdown from stdin');
+  
+  try {
+    const body = await readAllInput(process.stdin);
+    writeMarkdown(body);
+  } catch (err) {
+    logger.error(`Error reading stdin: ${err.message}`);
+  }
+
+  process.stdin.resume();
+}
+
+/**
+ * Start the server with retry logic
+ */
+async function serverStart(error = null, attempts = CONFIG.connectionRetries) {
+  if (attempts <= 0) {
+    logger.error('Exhausted connection attempts');
+    process.exit(1);
+  }
+
+  if (error) {
+    logger.log(`Error starting listener: ${error.message}`);
+    logger.log('Sleeping 1 second before retry...');
+    await sleep(1000);
+  }
+
+  const isFirstAttempt = attempts === CONFIG.connectionRetries;
+  
+  logger.log(`Connecting - remaining attempts: ${attempts}`);
+
+  const listenArgs = [CONFIG.port];
+  
+  if (!CONFIG.openToTheWorld) {
+    listenArgs.push('127.0.0.1');
+  }
+
+  server
+    .listen(...listenArgs)
+    .once('listening', () => {
+      if (isFirstAttempt) {
+        onListening();
+      }
+    })
+    .once('error', (err) => {
+      serverStart(err, attempts - 1);
+    });
+}
+
+// =============================================================================
+// Process Management
+// =============================================================================
+
+/**
+ * Check for and kill existing instances
+ */
+async function manageInstances() {
+  const isInteger = (num) => /^-?\d+$/.test(String(num));
+
+  try {
+    if (fs.existsSync(CONFIG.pidFile)) {
+      const pid = fs.readFileSync(CONFIG.pidFile, 'utf8').trim();
+      logger.log(`Previous PID: ${pid}`);
+
+      if (isInteger(pid) && isRunning(parseInt(pid, 10))) {
+        if (pid !== selfPid) {
+          logger.log('Killing existing instance...');
+          await sleep(1000);
+          try {
+            process.kill(parseInt(pid, 10), 'SIGKILL');
+            logger.log(`Killed process ${pid}`);
+          } catch (err) {
+            logger.error(`Failed to kill process ${pid}: ${err.message}`);
+          }
+        }
+      } else {
+        logger.log('PID file exists but process is not running');
+      }
+    } else {
+      logger.log('No existing PID file found');
+    }
+  } catch (err) {
+    logger.error(`Error managing instances: ${err.message}`);
+  }
+
+  // Write current PID
+  fs.writeFileSync(CONFIG.pidFile, selfPid);
+}
+
+/**
+ * Cleanup on exit
+ */
+process.on('exit', () => {
+  try {
+    fs.unlinkSync(CONFIG.pidFile);
+  } catch {
+    // Ignore cleanup errors
+  }
+  logStream.end();
+});
+
+process.on('SIGINT', () => {
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  process.exit(0);
+});
+
+// =============================================================================
+// Main Entry Point
+// =============================================================================
+
+logger.log('Starting instant-markdown-d');
+logger.log(`PID: ${selfPid}`);
+logger.log(`Port: ${CONFIG.port}`);
+logger.log(`Config: ${JSON.stringify(CONFIG, null, 2)}`);
+
+manageInstances().then(() => {
+  serverStart();
+});
