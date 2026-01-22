@@ -32,36 +32,208 @@
       background: white;
       color: red;
     }
+
+    /* Mermaid diagram styles - clickable cursor with proper containment */
+    .markdown-body pre.mermaid {
+      cursor: zoom-in;
+      transition: box-shadow 0.2s ease;
+      border-radius: 8px;
+      padding: 16px;
+      background: #f8f9fa;
+      overflow: hidden;
+      max-width: 100%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    .markdown-body pre.mermaid:hover {
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    }
+    .markdown-body pre.mermaid svg {
+      display: block;
+      max-width: 100%;
+      height: auto;
+    }
+
+    /* Diagram zoom modal overlay */
+    #diagram-modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: #ffffff;
+      z-index: 10000;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+      padding: 20px;
+      box-sizing: border-box;
+      overflow: auto;
+    }
+    #diagram-modal.active {
+      display: flex;
+    }
+    #diagram-modal-content {
+      max-width: 95vw;
+      max-height: calc(100vh - 100px);
+      overflow: auto;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+    }
+    #diagram-modal-content svg {
+      max-width: 100%;
+      height: auto;
+    }
+    #diagram-modal-close {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      width: 48px;
+      height: 48px;
+      border: none;
+      background: #f3f4f6;
+      border-radius: 50%;
+      cursor: pointer;
+      font-size: 24px;
+      color: #374151;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      transition: background 0.2s ease, transform 0.2s ease;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+      z-index: 10001;
+    }
+    #diagram-modal-close:hover {
+      background: #e5e7eb;
+      transform: scale(1.1);
+    }
+    #diagram-modal-hint {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #6b7280;
+      font-size: 14px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    }
   </style>
-  <script src="mermaid.min.js"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script>
-    var socket = io.connect('http://'+ window.location.host +'/');
-    socket.on('connect', function () {
-      setDisconnected(false);
-      socket.on('newContent', function(newHTML) {
-        document.querySelector(".markdown-body").innerHTML = newHTML;
-
-        mermaid.init()
-        // scroll to the hyperlink with id="marker"
-        let marker = document.getElementById("imdmarker");
-        if(marker) {
-            marker.scrollIntoView({block : "center"});
-        }
-      });
-      socket.on('die', function(newHTML) {
-        window.open('', '_self', '');
-        window.close();
-
-        var firefoxWarning =
-        "<h1>Please close this tab!</h1>" +
-        "<h3>If you are using Firefox and want the preview window to close automatically go to about:config and set dom.allow_scripts_to_close_windows to true.</h3>"
-        document.body.innerHTML = firefoxWarning;
-      });
+  <script type="module">
+    import mermaid from './mermaid.esm.min.mjs';
+    import elkLayouts from './mermaid-layout-elk.esm.min.mjs';
+    
+    // Register ELK layout algorithms
+    mermaid.registerLayoutLoaders(elkLayouts);
+    
+    // Make mermaid available globally for the rest of the script
+    window.mermaid = mermaid;
+    
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'default',
+      layout: 'elk',
+      elk: {
+        mergeEdges: true,
+        nodePlacementStrategy: 'NETWORK_SIMPLEX',
+        // Better handling of nested subgraphs
+        'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
+        'elk.algorithm': 'layered',
+        'elk.layered.spacing.nodeNodeBetweenLayers': '50',
+        'elk.spacing.nodeNode': '30',
+        'elk.padding': '[top=20,left=20,bottom=20,right=20]'
+      },
+      flowchart: {
+        useMaxWidth: false,
+        htmlLabels: true,
+        curve: 'basis',
+        nodeSpacing: 40,
+        rankSpacing: 60,
+        padding: 20,
+        diagramPadding: 10,
+        defaultRenderer: 'elk',
+        subGraphTitleMargin: { top: 10, bottom: 10 }
+      },
+      sequence: {
+        actorMargin: 80,
+        boxMargin: 10,
+        boxTextMargin: 5,
+        noteMargin: 10,
+        messageMargin: 35,
+        mirrorActors: true,
+        useMaxWidth: false
+      },
+      gantt: {
+        useMaxWidth: false,
+        barHeight: 30,
+        barGap: 8,
+        topPadding: 50,
+        leftPadding: 75,
+        gridLineStartPadding: 35,
+        fontSize: 12,
+        sectionFontSize: 14
+      },
+      er: {
+        useMaxWidth: false,
+        entityPadding: 15,
+        minEntityWidth: 100,
+        minEntityHeight: 75
+      },
+      pie: {
+        useMaxWidth: false,
+        textPosition: 0.75
+      },
+      class: {
+        useMaxWidth: false,
+        padding: 10
+      }
     });
-    socket.on('disconnect', function() {
-      setDisconnected(true);
-    });
+    
+    // Signal that mermaid is ready
+    window.mermaidReady = true;
+    window.dispatchEvent(new Event('mermaidReady'));
+
+    // Wait for mermaid module to be ready
+    function initSocket() {
+      var socket = io.connect('http://'+ window.location.host +'/');
+      socket.on('connect', function () {
+        setDisconnected(false);
+        socket.on('newContent', async function(newHTML) {
+          document.querySelector(".markdown-body").innerHTML = newHTML;
+
+          if (window.mermaid) {
+            await window.mermaid.run();
+          }
+          
+          // Add click-to-zoom handlers to all mermaid diagrams
+          window.attachDiagramZoomHandlers();
+          
+          // scroll to the hyperlink with id="marker"
+          let marker = document.getElementById("imdmarker");
+          if(marker) {
+              marker.scrollIntoView({block : "center"});
+          }
+        });
+        socket.on('die', function(newHTML) {
+          window.open('', '_self', '');
+          window.close();
+
+          var firefoxWarning =
+          "<h1>Please close this tab!</h1>" +
+          "<h3>If you are using Firefox and want the preview window to close automatically go to about:config and set dom.allow_scripts_to_close_windows to true.</h3>"
+          document.body.innerHTML = firefoxWarning;
+        });
+      });
+      socket.on('disconnect', function() {
+        setDisconnected(true);
+      });
+    }
+    
+    // Initialize socket immediately - mermaid will be ready by the time content arrives
+    initSocket();
 
     try {
       eval('// If CSP is active, then this is blocked');
@@ -78,6 +250,98 @@
       document.getElementById('con-error').style.display =
         isDisconnected ? 'block' : 'none';
     }
+
+    // Diagram zoom modal functionality - exposed globally for onclick handlers
+    window.attachDiagramZoomHandlers = function() {
+      const diagrams = document.querySelectorAll('.markdown-body pre.mermaid');
+      diagrams.forEach(function(diagram) {
+        // Remove existing listener to avoid duplicates
+        diagram.removeEventListener('click', window.openDiagramModal);
+        diagram.addEventListener('click', window.openDiagramModal);
+        
+        // Scale diagram to fit container while preserving aspect ratio
+        const svg = diagram.querySelector('svg');
+        if (svg) {
+          const viewBox = svg.getAttribute('viewBox');
+          if (viewBox) {
+            const [, , vbWidth, vbHeight] = viewBox.split(' ').map(parseFloat);
+            const containerWidth = diagram.clientWidth - 32; // account for padding
+            
+            // Scale to fit container width, with max height constraint
+            if (vbWidth > containerWidth) {
+              const scale = containerWidth / vbWidth;
+              const scaledHeight = vbHeight * scale;
+              svg.style.width = containerWidth + 'px';
+              svg.style.height = scaledHeight + 'px';
+              svg.style.maxWidth = '100%';
+            }
+          }
+        }
+      });
+    };
+
+    window.openDiagramModal = function(event) {
+      const diagram = event.currentTarget;
+      const svg = diagram.querySelector('svg');
+      if (!svg) return;
+
+      const modal = document.getElementById('diagram-modal');
+      const modalContent = document.getElementById('diagram-modal-content');
+      
+      // Clear previous content first
+      modalContent.innerHTML = '';
+      
+      const svgClone = svg.cloneNode(true);
+      
+      // Reset any inline styles from the non-zoomed view
+      svgClone.style.width = '';
+      svgClone.style.height = '';
+      svgClone.style.maxWidth = '';
+      
+      const viewBox = svg.getAttribute('viewBox');
+      if (viewBox) {
+        const [, , vbWidth, vbHeight] = viewBox.split(' ').map(parseFloat);
+        const aspectRatio = vbWidth / vbHeight;
+        
+        const maxWidth = window.innerWidth * 0.92;
+        const maxHeight = window.innerHeight * 0.85;
+        
+        let finalWidth, finalHeight;
+        if (maxWidth / aspectRatio <= maxHeight) {
+          finalWidth = maxWidth;
+          finalHeight = maxWidth / aspectRatio;
+        } else {
+          finalHeight = maxHeight;
+          finalWidth = maxHeight * aspectRatio;
+        }
+        
+        svgClone.setAttribute('width', finalWidth + 'px');
+        svgClone.setAttribute('height', finalHeight + 'px');
+        svgClone.style.width = finalWidth + 'px';
+        svgClone.style.height = finalHeight + 'px';
+        svgClone.style.maxWidth = 'none';
+        svgClone.style.display = 'block';
+      }
+      
+      modalContent.appendChild(svgClone);
+      modal.classList.add('active');
+      
+      document.body.style.overflow = 'hidden';
+    };
+
+    window.closeDiagramModal = function() {
+      const modal = document.getElementById('diagram-modal');
+      modal.classList.remove('active');
+      document.body.style.overflow = '';
+      // Clear modal content to prevent ghosting
+      document.getElementById('diagram-modal-content').innerHTML = '';
+    };
+
+    document.addEventListener('keydown', function(event) {
+      if (event.key === 'Escape') {
+        window.closeDiagramModal();
+      }
+    });
   </script>
 </head>
 <body>
@@ -94,5 +358,12 @@
     </div>
   </div>
   <div id="con-error" style="display:none">Live preview is unavailable</div>
+  
+  <!-- Diagram zoom modal -->
+  <div id="diagram-modal" onclick="if(event.target === this) window.closeDiagramModal();">
+    <button id="diagram-modal-close" onclick="window.closeDiagramModal();" title="Close (Esc)">×</button>
+    <div id="diagram-modal-content"></div>
+    <div id="diagram-modal-hint">Click outside or press Esc to close</div>
+  </div>
 </body>
 </html>
