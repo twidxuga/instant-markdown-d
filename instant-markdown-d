@@ -290,6 +290,12 @@ function handleGetRequest(req, res, url) {
     return;
   }
 
+  // Handle file browser directory listing API
+  if (url.startsWith('/__imd_dir__')) {
+    handleDirRequest(req, res);
+    return;
+  }
+
   // Resolve static content paths
   let resolvedUrl = url;
   if (isStaticContent && !isHomeContent) {
@@ -393,6 +399,81 @@ function handleMarkdownRequest(req, res, url) {
 
     res.end(customizedHtml);
     writeMarkdown(data, eventId);
+  });
+}
+
+/**
+ * Handle directory listing requests for the file browser widget
+ */
+function handleDirRequest(req, res) {
+  let urlObj;
+  try {
+    urlObj = new URL(req.url, `http://localhost:${CONFIG.port}`);
+  } catch {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Bad request' }));
+    return;
+  }
+
+  let relPath;
+  try {
+    relPath = decodeURIComponent(urlObj.searchParams.get('path') || '/');
+  } catch {
+    relPath = urlObj.searchParams.get('path') || '/';
+  }
+
+  const cwd = process.cwd();
+
+  // Resolve to absolute path
+  const absPath = (relPath === '/' || relPath === '')
+    ? cwd
+    : path.resolve(cwd, relPath.replace(/^\/+/, ''));
+
+  // Security: must stay strictly within cwd
+  const isWithinCwd = absPath === cwd || absPath.startsWith(cwd + path.sep);
+  if (!isWithinCwd) {
+    logger.error(`Dir request rejected - outside cwd: ${absPath}`);
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Access denied' }));
+    return;
+  }
+
+  logger.log(`Dir listing: ${absPath}`);
+
+  fs.readdir(absPath, { withFileTypes: true }, (err, entries) => {
+    if (err) {
+      logger.error(`Dir listing failed: ${err.message}`);
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Directory not found' }));
+      return;
+    }
+
+    const result = [];
+
+    // Add parent (..) unless already at cwd root
+    if (absPath !== cwd) {
+      result.push({ name: '..', type: 'directory' });
+    }
+
+    const dirs = [];
+    const files = [];
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue; // skip hidden
+      if (entry.isDirectory()) dirs.push({ name: entry.name, type: 'directory' });
+      else if (entry.isFile()) files.push({ name: entry.name, type: 'file' });
+    }
+    dirs.sort((a, b) => a.name.localeCompare(b.name));
+    files.sort((a, b) => a.name.localeCompare(b.name));
+    result.push(...dirs, ...files);
+
+    const relativePath = absPath === cwd ? '/' : '/' + path.relative(cwd, absPath);
+
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.end(JSON.stringify({ path: relativePath, entries: result }));
   });
 }
 

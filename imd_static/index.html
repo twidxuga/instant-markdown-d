@@ -149,6 +149,189 @@
       font-size: 14px;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
     }
+
+    /* ===== File Browser Widget ===== */
+    #imd-filebrowser {
+      position: fixed;
+      top: 0;
+      left: 0;
+      z-index: 9998;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font-size: 12px;
+      line-height: 1.4;
+      user-select: none;
+    }
+
+    #imd-fb-tab {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 10px 3px 7px;
+      background: rgba(40, 40, 40, 0.25);
+      color: #e8e8e8;
+      border-bottom-right-radius: 6px;
+      cursor: default;
+      white-space: nowrap;
+      min-height: 22px;
+      box-sizing: border-box;
+      transition: background 0.15s ease, border-bottom-right-radius 0.15s ease;
+      transform: translateZ(0);
+    }
+
+    #imd-filebrowser:hover #imd-fb-tab {
+      background: rgba(20, 20, 20, 0.50);
+      border-bottom-right-radius: 0;
+    }
+
+    #imd-fb-icon {
+      font-size: 12px;
+    }
+
+    #imd-fb-label {
+      font-size: 11px;
+      opacity: 0.85;
+      max-width: 160px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    #imd-fb-panel {
+      max-height: 0;
+      overflow: hidden;
+      background: #ffffff;
+      border-radius: 0 0 6px 0;
+      min-width: 220px;
+      max-width: 300px;
+      transition: max-height 0.22s ease-out, overflow-y 0s 0s;
+    }
+
+    #imd-filebrowser:hover #imd-fb-panel {
+      max-height: 400px;
+      overflow-y: auto;
+      border: 1px solid #d0d0d0;
+      border-top: none;
+      box-shadow: 2px 6px 16px rgba(0, 0, 0, 0.16);
+      transition: max-height 0.22s ease-out, overflow-y 0s 0.22s;
+    }
+
+    #imd-fb-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 8px 4px;
+      border-bottom: 1px solid #ebebeb;
+      background: #f6f8fa;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+
+    #imd-fb-back {
+      background: none;
+      border: 1px solid #d0d0d0;
+      border-radius: 3px;
+      cursor: pointer;
+      padding: 1px 7px;
+      font-size: 13px;
+      color: #555;
+      line-height: 1.5;
+      flex-shrink: 0;
+      font-family: inherit;
+    }
+
+    #imd-fb-back:hover {
+      background: #e8e8e8;
+      color: #222;
+    }
+
+    #imd-fb-path {
+      font-size: 11px;
+      color: #777;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+
+    #imd-fb-list {
+      padding: 3px 0;
+    }
+
+    .imd-fb-entry {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      color: #24292f;
+    }
+
+    .imd-fb-entry:hover {
+      background: #f0f4ff;
+      color: #0969da;
+    }
+
+    .imd-fb-entry-icon {
+      flex-shrink: 0;
+      font-size: 11px;
+      opacity: 0.75;
+    }
+
+    .imd-fb-entry-name {
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ===== Image Viewer Overlay ===== */
+    #imd-img-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.88);
+      z-index: 9997;
+      justify-content: center;
+      align-items: center;
+      cursor: pointer;
+    }
+
+    #imd-img-overlay.active {
+      display: flex;
+    }
+
+    #imd-img-close {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      background: rgba(255, 255, 255, 0.15);
+      border: none;
+      border-radius: 50%;
+      width: 38px;
+      height: 38px;
+      font-size: 22px;
+      color: #fff;
+      cursor: pointer;
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s ease;
+    }
+
+    #imd-img-close:hover {
+      background: rgba(255, 255, 255, 0.28);
+    }
+
+    #imd-img-display {
+      max-width: 92vw;
+      max-height: 90vh;
+      object-fit: contain;
+      border-radius: 4px;
+      box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+      cursor: default;
+    }
   </style>
 </head>
 <body>
@@ -443,10 +626,194 @@ import elkLayouts from '/mermaid-layout-elk.esm.min.mjs';
     }
 
     // ==========================================================================
+    // File Browser Widget
+    // ==========================================================================
+
+    (function initFileBrowser() {
+      const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.bmp', '.ico', '.tiff', '.tif', '.avif']);
+      const MD_EXTS = new Set(['.md', '.markdown']);
+      let currentBrowsePath = '/';
+
+      function getExt(name) {
+        const i = name.lastIndexOf('.');
+        return i >= 0 ? name.slice(i).toLowerCase() : '';
+      }
+
+      function getIcon(entry) {
+        if (entry.type === 'directory') return entry.name === '..' ? '\u2191' : '\uD83D\uDCC1';
+        const ext = getExt(entry.name);
+        if (MD_EXTS.has(ext)) return '\uD83D\uDCC4';
+        if (IMAGE_EXTS.has(ext)) return '\uD83D\uDDBC';
+        if (ext === '.pdf') return '\uD83D\uDCD1';
+        return '\uD83D\uDCCE';
+      }
+
+      function getInitialPath() {
+        const p = window.location.pathname;
+        if (!p || p === '/') return '/';
+        const parts = p.split('/').filter(Boolean);
+        if (parts.length <= 1) return '/';
+        parts.pop();
+        return '/' + parts.join('/');
+      }
+
+      function joinPath(dir, name) {
+        return dir === '/' ? '/' + name : dir + '/' + name;
+      }
+
+      function getParentPath(dir) {
+        if (dir === '/') return '/';
+        const parts = dir.split('/').filter(Boolean);
+        parts.pop();
+        return parts.length === 0 ? '/' : '/' + parts.join('/');
+      }
+
+      function showImageOverlay(imgPath) {
+        const overlay = document.getElementById('imd-img-overlay');
+        const img = document.getElementById('imd-img-display');
+        img.src = imgPath;
+        overlay.classList.add('active');
+        document.body.style.overflow = 'hidden';
+      }
+
+      function closeImageOverlay() {
+        const overlay = document.getElementById('imd-img-overlay');
+        if (!overlay || !overlay.classList.contains('active')) return;
+        overlay.classList.remove('active');
+        document.getElementById('imd-img-display').src = '';
+        document.body.style.overflow = '';
+      }
+
+      async function loadDirectory(dirPath) {
+        const list = document.getElementById('imd-fb-list');
+        const pathEl = document.getElementById('imd-fb-path');
+        const label = document.getElementById('imd-fb-label');
+        list.innerHTML = '<div style="padding:6px 10px;color:#888;font-size:11px">Loading\u2026</div>';
+
+        try {
+          const resp = await fetch('/__imd_dir__?path=' + encodeURIComponent(dirPath));
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          const data = await resp.json();
+          if (data.error) throw new Error(data.error);
+
+          currentBrowsePath = data.path;
+          const parts = currentBrowsePath.split('/').filter(Boolean);
+          label.textContent = parts.length === 0 ? '/' : parts[parts.length - 1];
+          pathEl.textContent = currentBrowsePath;
+
+          list.innerHTML = '';
+          if (data.entries.length === 0) {
+            list.innerHTML = '<div style="padding:6px 10px;color:#888;font-size:11px">Empty</div>';
+            return;
+          }
+
+          for (const entry of data.entries) {
+            const el = document.createElement('div');
+            el.className = 'imd-fb-entry';
+            el.title = entry.name;
+
+            const iconEl = document.createElement('span');
+            iconEl.className = 'imd-fb-entry-icon';
+            iconEl.textContent = getIcon(entry);
+
+            const nameEl = document.createElement('span');
+            nameEl.className = 'imd-fb-entry-name';
+            nameEl.textContent = entry.name;
+
+            el.appendChild(iconEl);
+            el.appendChild(nameEl);
+
+            if (entry.type === 'directory') {
+              el.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const next = entry.name === '..'
+                  ? getParentPath(currentBrowsePath)
+                  : joinPath(currentBrowsePath, entry.name);
+                loadDirectory(next);
+              });
+            } else {
+              const filePath = joinPath(currentBrowsePath, entry.name);
+              const ext = getExt(entry.name);
+              if (IMAGE_EXTS.has(ext)) {
+                el.addEventListener('click', (e) => {
+                  e.stopPropagation();
+                  showImageOverlay(filePath);
+                });
+              } else {
+                // markdown and all other files: navigate (markdown handled server-side, others use browser default)
+                el.addEventListener('click', (e) => {
+                  e.stopPropagation();
+                  window.location.href = filePath;
+                });
+              }
+            }
+
+            list.appendChild(el);
+          }
+        } catch (err) {
+          list.innerHTML = '<div style="padding:6px 10px;color:#c00;font-size:11px">Error: ' + err.message + '</div>';
+        }
+      }
+
+      function handleBack() {
+        const overlay = document.getElementById('imd-img-overlay');
+        if (overlay && overlay.classList.contains('active')) {
+          closeImageOverlay();
+        } else {
+          window.history.back();
+        }
+      }
+
+      // Event bindings
+      document.getElementById('imd-fb-back').addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleBack();
+      });
+
+      document.getElementById('imd-img-overlay').addEventListener('click', (e) => {
+        if (e.target === e.currentTarget) closeImageOverlay();
+      });
+
+      document.getElementById('imd-img-close').addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeImageOverlay();
+      });
+
+      // Extend existing keydown to also close image overlay
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeImageOverlay();
+      });
+
+      // Start by loading the directory of the current file
+      loadDirectory(getInitialPath());
+    })();
+
+    // ==========================================================================
     // Initialize
     // ==========================================================================
     
     initSocket();
   </script>
+
+  <!-- ===== File Browser Widget ===== -->
+  <div id="imd-filebrowser">
+    <div id="imd-fb-tab">
+      <span id="imd-fb-icon">&#128193;</span>
+      <span id="imd-fb-label">&hellip;</span>
+    </div>
+    <div id="imd-fb-panel">
+      <div id="imd-fb-toolbar">
+        <button id="imd-fb-back" title="Go back">&#8592;</button>
+        <span id="imd-fb-path"></span>
+      </div>
+      <div id="imd-fb-list"></div>
+    </div>
+  </div>
+
+  <!-- ===== Image Viewer Overlay ===== -->
+  <div id="imd-img-overlay">
+    <button id="imd-img-close" title="Close (Esc)" aria-label="Close image">&#215;</button>
+    <img id="imd-img-display" src="" alt="Image preview">
+  </div>
 </body>
 </html>
